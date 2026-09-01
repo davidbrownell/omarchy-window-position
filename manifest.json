@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "id": "davidbrownell.window-position",
   "name": "Window position",
-  "version": "1.2.0",
-  "author": "davidbrownell",
+  "version": "1.2.1",
+  "author": "Dave Brownell",
   "description": "Where the focused window sits in the scrolling layout",
   "kinds": [
     "bar-widget"

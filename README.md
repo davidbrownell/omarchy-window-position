@@ -31,22 +31,29 @@ style), so the bar layout never shifts as windows come and go.
 
 ![A single dim pip on an empty workspace](screenshots/empty.png)
 
-- **Hover** for a readout of the position and the workspace and layout it was
-  measured on:
+- **Hover** for a readout of the position, under the widget's own name and
+  over the workspace and layout the reading came from:
 
-  ![Tooltip reading "Window 3 of 4 · column 2 of 3 (2 stacked)" over "Workspace 5 · dwindle layout"](screenshots/tooltip.png)
+  ![Popup titled "Window position" reading "Window 2 of 2", over Workspace and Layout rows](screenshots/tooltip.png)
 
 - **Scroll** over the strip to walk focus along the layout (`u`/`d` on a
   vertical bar).
 
-Two details of the bar's tooltip host shape how this is wired. It only opens a
-tooltip for a widget exposing a `tooltipHovered` property, which it reads off
-the target rather than trusting the request — so the widget publishes one. And
-it opens on a 400ms delay that every `showTooltip` call restarts: since the
-poller hands back a fresh layout object several times a second, re-showing the
-tooltip on `layout` changing would reset that delay forever and the bubble
-would never appear. The text is therefore held in a string property, which
-signals only when the text really changes.
+The bubble is the widget's own `PopupWindow` rather than the bar's shared
+tooltip. That tooltip is one line of centred plain text, with nowhere to put a
+title or to line values up under each other, so the widget draws its own in the
+theme's tooltip colours, on the bar's 400ms open delay, anchored to whichever
+face of the bar looks onto the workspace. Drawing it here also keeps it live:
+the readout is a binding, so the numbers move under a pointer already resting on
+the strip — where the shared tooltip only takes text as it opens, and every
+re-announce restarts that 400ms delay, so a widget refreshing several times a
+second could never get the bubble open at all.
+
+The readout still funnels through a single string property — a headline, then
+a tab-separated label and value per row — for the reason that shaped the old
+one. The poller hands back a fresh layout object several times a second, and an
+object property would report every one of those as a change and rebuild the rows
+under the pointer; a string signals only when the text really differs.
 
 ## Settings
 

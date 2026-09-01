@@ -1,4 +1,5 @@
 import QtQuick
+import Quickshell
 import Quickshell.Hyprland
 import qs.Commons
 import qs.Ui
@@ -10,6 +11,12 @@ import qs.Ui
 BarWidget {
   id: root
   moduleName: "dbrownell.window-position"
+
+  // Mirrors `name` in manifest.json. The hover popup titles itself with this,
+  // so a bubble that opens under a row of anonymous pips says what drew it.
+  readonly property string pluginName: "Window position"
+
+  readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
   readonly property string style: String(setting("style", "pips"))
   readonly property int maxPips: Math.max(1, Number(setting("maxPips", 12)))
@@ -162,14 +169,21 @@ BarWidget {
     return index === activeColumn ? activePipLength : pipLength
   }
 
-  // Nothing about a row of pips says what it is measuring, so the tooltip
-  // reads out the position and names the workspace and layout it was read from.
+  // Nothing about a row of pips says what it is measuring, so the popup reads
+  // out the position and names the workspace and layout it was measured on.
   //
   // Read entirely off one layout object rather than the properties unpacked
   // from it: those are separate bindings, and a binding that mixed them could
   // be evaluated with a new column list beside a stale index -- which indexes
   // past the end of the list the moment the workspace loses a column.
-  function tooltipText() {
+  //
+  // Returned as one string -- a headline, then a tab-separated label and value
+  // per line -- rather than as an object, so the popup can build its rows off
+  // a property that signals only on a real change. The poller hands back a
+  // fresh layout object several times a second, and an object property would
+  // report every one of those as a change, rebuilding the rows under the
+  // pointer even when the readout is word for word the same.
+  function readout() {
     var snapshot = layout
     var count = snapshot.windowCount
     var columns = snapshot.columns
@@ -180,35 +194,44 @@ BarWidget {
     if (count === 0)
       lines.push("No tiled windows")
     else if (snapshot.floatingFocus)
-      lines.push("Floating window · " + count + " tiled")
+      lines.push("Floating window")
     else if (index < 0)
       lines.push(count + (count === 1 ? " tiled window" : " tiled windows"))
-    else {
-      var text = "Window " + (index + 1) + " of " + count
-      if (columns.length !== count)
-        text += " · column " + (column + 1) + " of " + columns.length
+    else
+      lines.push("Window " + (index + 1) + " of " + count)
+
+    // The count the headline drops when focus is floating: the strip is still
+    // mapping those windows, it just has nothing lit.
+    if (snapshot.floatingFocus && count > 0)
+      lines.push("Tiled\t" + count + (count === 1 ? " window" : " windows"))
+
+    // Only worth a row when a column holds more than its own window --
+    // otherwise it repeats the headline back with the same two numbers.
+    if (index >= 0 && columns.length !== count) {
       var stacked = columns[column] ? columns[column].windows.length : 1
-      if (stacked > 1) text += " (" + stacked + " stacked)"
-      lines.push(text)
+      lines.push("Column\t" + (column + 1) + " of " + columns.length
+        + (stacked > 1 ? " (" + stacked + " stacked)" : ""))
     }
 
     if (snapshot.workspaceName !== "")
-      lines.push("Workspace " + snapshot.workspaceName
-        + (snapshot.tiledLayout !== "" ? " · " + snapshot.tiledLayout + " layout" : ""))
+      lines.push("Workspace\t" + snapshot.workspaceName)
+    if (snapshot.tiledLayout !== "")
+      lines.push("Layout\t" + snapshot.tiledLayout)
 
     return lines.join("\n")
   }
 
-  // Held as a property rather than called at each use: the poller hands back a
-  // fresh layout object every interval, so a binding on layout alone would
-  // re-announce identical text several times a second -- and every re-announce
-  // restarts the bar's open delay, which keeps the tooltip from ever appearing.
-  // A string property only signals on a real change, so the delay can elapse.
-  readonly property string tooltipLabel: tooltipText()
-
-  // The bar only opens a tooltip for a widget that reports itself hovered --
-  // it reads this property off the target rather than trusting the request.
-  readonly property bool tooltipHovered: hover.containsMouse
+  readonly property string readoutText: readout()
+  readonly property string readoutHeadline: readoutText.split("\n")[0]
+  readonly property var readoutRows: {
+    var lines = readoutText.split("\n")
+    var rows = []
+    for (var i = 1; i < lines.length; i++) {
+      var cells = lines[i].split("\t")
+      rows.push({ label: cells[0], value: cells[1] })
+    }
+    return rows
+  }
 
   // ---------------------------------------------------------------- refresh
 
@@ -386,7 +409,7 @@ BarWidget {
           ? (root.activeIndex + 1) + "/" + root.windowCount
           : "-/" + root.windowCount)
       color: root.bar ? root.bar.barForeground : Color.bar.text
-      font.family: root.bar ? root.bar.fontFamily : Style.font.family
+      font.family: root.fontFamily
       font.pixelSize: Style.font.caption
       opacity: root.floatingFocus ? 0.55 : 0.85
     }
@@ -398,8 +421,13 @@ BarWidget {
     hoverEnabled: true
     cursorShape: Qt.PointingHandCursor
 
-    onEntered: if (root.bar) root.bar.showTooltip(root, root.tooltipLabel)
-    onExited: if (root.bar) root.bar.hideTooltip(root)
+    // Opened on a delay, so sweeping the pointer across the bar on the way to
+    // another widget does not flash the bubble on the way past.
+    onEntered: popupDelay.restart()
+    onExited: {
+      popupDelay.stop()
+      root.popupOpen = false
+    }
 
     // Scrolling the pips walks focus along the layout, in the direction the
     // strip runs.
@@ -411,9 +439,196 @@ BarWidget {
     }
   }
 
-  // The tooltip is a shared popup that only takes text when it is opened, so
-  // re-show it while the pointer sits on a strip that is still moving.
-  onTooltipLabelChanged: if (hover.containsMouse && bar) bar.showTooltip(root, tooltipLabel)
+  // ------------------------------------------------------------------ popup
+
+  // The bar's shared tooltip is a single line of centred text with nowhere to
+  // put a title, so the widget draws its own bubble instead: its name over a
+  // rule, the position under it, and the rest as label/value rows. The tooltip
+  // colours and the bar's 400ms open delay are kept, so it still reads as part
+  // of the bar -- and because the bubble binds straight to the readout, it
+  // stays current while the pointer sits on it rather than having to be
+  // re-announced.
+  property bool popupOpen: false
+
+  Timer {
+    id: popupDelay
+    interval: 400
+    onTriggered: root.popupOpen = hover.containsMouse
+  }
+
+  PopupWindow {
+    id: popup
+
+    readonly property int margin: Style.space(6)
+
+    // Stays mapped through the fade so the bubble can animate away instead of
+    // blinking out from under the pointer.
+    visible: root.popupOpen || bubble.opacity > 0
+    color: "transparent"
+    implicitWidth: Math.ceil(bubble.implicitWidth)
+    implicitHeight: Math.ceil(bubble.implicitHeight)
+
+    // Focus moving between columns resizes both the strip and the bubble, and
+    // scrolling here moves focus with the pointer still on the widget, so
+    // re-anchor while the bubble is up rather than leave it hanging off the
+    // widget's old centre.
+    onImplicitWidthChanged: if (visible) popupAnchor.updateAnchor()
+
+    Connections {
+      target: root
+      enabled: popup.visible
+      function onWidthChanged() { popupAnchor.updateAnchor() }
+    }
+
+    anchor {
+      id: popupAnchor
+      window: root.QsWindow.window
+      adjustment: PopupAdjustment.Slide
+      edges: Edges.Top | Edges.Left
+      gravity: Edges.Bottom | Edges.Right
+      rect.width: 1
+      rect.height: 1
+
+      // Opens on the face of the bar that looks onto the workspace, and is
+      // held off the screen edge for a widget sitting at the end of the bar.
+      onAnchoring: {
+        var window = root.QsWindow.window
+        if (!window) return
+
+        var popupWidth = popup.implicitWidth
+        var popupHeight = popup.implicitHeight
+        var position = root.bar ? root.bar.position : "top"
+        var localX = root.width / 2 - popupWidth / 2
+        var localY = root.height + popup.margin
+
+        if (position === "bottom") {
+          localY = -popupHeight - popup.margin
+        } else if (position === "left") {
+          localX = root.width + popup.margin
+          localY = root.height / 2 - popupHeight / 2
+        } else if (position === "right") {
+          localX = -popupWidth - popup.margin
+          localY = root.height / 2 - popupHeight / 2
+        }
+
+        var point = window.contentItem.mapFromItem(root, localX, localY)
+        if (position === "top" || position === "bottom")
+          point.x = Math.max(popup.margin,
+            Math.min(point.x, window.width - popupWidth - popup.margin))
+        else
+          point.y = Math.max(popup.margin,
+            Math.min(point.y, window.height - popupHeight - popup.margin))
+
+        popupAnchor.rect.x = Math.round(point.x)
+        popupAnchor.rect.y = Math.round(point.y)
+      }
+    }
+
+    BorderSurface {
+      id: bubble
+      anchors.fill: parent
+      color: Color.tooltip.background
+      borderSpec: Border.surfaceSpec("tooltip", "border", Color.tooltip.border, Style.normalBorderWidth)
+      radius: Style.cornerRadius
+      leftPadding: Style.spacing.rowPaddingX
+      rightPadding: Style.spacing.rowPaddingX
+      topPadding: Style.spacing.lg
+      bottomPadding: Style.spacing.lg
+
+      implicitWidth: body.width + contentLeftInset + contentRightInset
+      implicitHeight: body.implicitHeight + contentTopInset + contentBottomInset
+
+      opacity: root.popupOpen ? 1 : 0
+
+      Behavior on opacity { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+
+      Column {
+        id: body
+        x: bubble.contentLeftInset
+        y: bubble.contentTopInset
+        spacing: Style.spacing.sm
+
+        // Sized to its widest line rather than filling the bubble: the bubble
+        // takes its own width from this, so measuring against the parent would
+        // tie the two together.
+        width: Math.max(title.implicitWidth, headline.implicitWidth, rows.implicitWidth)
+
+        Text {
+          id: title
+          textFormat: Text.PlainText
+          text: root.pluginName
+          color: Color.tooltip.text
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          opacity: 0.65
+        }
+
+        Rectangle {
+          width: body.width
+          height: 1
+          color: Color.tooltip.text
+          opacity: 0.15
+        }
+
+        Text {
+          id: headline
+          textFormat: Text.PlainText
+          text: root.readoutHeadline
+          color: Color.tooltip.text
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+        }
+
+        // A column of labels beside a column of values, rather than one grid
+        // of cells: the values then start on a common left edge whatever the
+        // labels happen to measure, and both columns step in the same rhythm
+        // because every row is one line of the same size.
+        Row {
+          id: rows
+          visible: root.readoutRows.length > 0
+          spacing: Style.spacing.controlGap
+
+          Column {
+            spacing: Style.spacing.xxs
+
+            Repeater {
+              model: root.readoutRows
+
+              Text {
+                required property var modelData
+
+                textFormat: Text.PlainText
+                text: modelData.label
+                color: Color.tooltip.text
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                opacity: 0.55
+              }
+            }
+          }
+
+          Column {
+            spacing: Style.spacing.xxs
+
+            Repeater {
+              model: root.readoutRows
+
+              Text {
+                required property var modelData
+
+                textFormat: Text.PlainText
+                text: modelData.value
+                color: Color.tooltip.text
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+          }
+        }
+      }
+    }
+  }
 
   function focusDirection(direction) {
     if (!bar) return

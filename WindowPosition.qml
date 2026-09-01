@@ -164,27 +164,37 @@ BarWidget {
 
   // Nothing about a row of pips says what it is measuring, so the tooltip
   // reads out the position and names the workspace and layout it was read from.
+  //
+  // Read entirely off one layout object rather than the properties unpacked
+  // from it: those are separate bindings, and a binding that mixed them could
+  // be evaluated with a new column list beside a stale index -- which indexes
+  // past the end of the list the moment the workspace loses a column.
   function tooltipText() {
+    var snapshot = layout
+    var count = snapshot.windowCount
+    var columns = snapshot.columns
+    var index = snapshot.activeIndex
+    var column = snapshot.activeColumn
     var lines = []
 
-    if (windowCount === 0)
+    if (count === 0)
       lines.push("No tiled windows")
-    else if (floatingFocus)
-      lines.push("Floating window · " + windowCount + " tiled")
-    else if (activeIndex < 0)
-      lines.push(windowCount + (windowCount === 1 ? " tiled window" : " tiled windows"))
+    else if (snapshot.floatingFocus)
+      lines.push("Floating window · " + count + " tiled")
+    else if (index < 0)
+      lines.push(count + (count === 1 ? " tiled window" : " tiled windows"))
     else {
-      var text = "Window " + (activeIndex + 1) + " of " + windowCount
-      if (columnCount !== windowCount)
-        text += " · column " + (activeColumn + 1) + " of " + columnCount
-      var stacked = layout.columns[activeColumn].windows.length
+      var text = "Window " + (index + 1) + " of " + count
+      if (columns.length !== count)
+        text += " · column " + (column + 1) + " of " + columns.length
+      var stacked = columns[column] ? columns[column].windows.length : 1
       if (stacked > 1) text += " (" + stacked + " stacked)"
       lines.push(text)
     }
 
-    if (workspaceName !== "")
-      lines.push("Workspace " + workspaceName
-        + (tiledLayout !== "" ? " · " + tiledLayout + " layout" : ""))
+    if (snapshot.workspaceName !== "")
+      lines.push("Workspace " + snapshot.workspaceName
+        + (snapshot.tiledLayout !== "" ? " · " + snapshot.tiledLayout + " layout" : ""))
 
     return lines.join("\n")
   }

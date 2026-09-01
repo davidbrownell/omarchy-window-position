@@ -5,10 +5,18 @@ workspace's window list — built for the scrolling layout, but it works under
 dwindle and master too since it reads live window geometry rather than
 assuming a layout.
 
+![Four pips, the second stretched into a pill](screenshots/pips.png)
+
 One pip per column, left to right in scroll order. The column holding focus
 stretches into a pill. A column that stacks several windows splits its pip
 into one segment per window, and the focused window's segment is the bright
 one — so both the horizontal and vertical position are visible at a glance.
+
+![Three pips, the middle one split into two segments](screenshots/stacked.png)
+
+Above: four windows under dwindle, focus on the upper of two windows sharing
+the middle column. Three columns, and the middle pip carries a segment per
+window with the focused one lit.
 
 Dwindle is the exception. It nests windows instead of lining them up, so a
 busy workspace collapses into a couple of columns holding several windows
@@ -21,13 +29,12 @@ The widget is always on the bar. A workspace holding one window shows one
 pip; an empty workspace shows a single dim placeholder pip (or `0` in counter
 style), so the bar layout never shifts as windows come and go.
 
+![A single dim pip on an empty workspace](screenshots/empty.png)
+
 - **Hover** for a readout of the position and the workspace and layout it was
   measured on:
 
-  ```
-  Window 2 of 5 · column 2 of 4
-  Workspace 3 · scrolling layout
-  ```
+  ![Tooltip reading "Window 3 of 4 · column 2 of 3 (2 stacked)" over "Workspace 5 · dwindle layout"](screenshots/tooltip.png)
 
 - **Scroll** over the strip to walk focus along the layout (`u`/`d` on a
   vertical bar).
@@ -44,7 +51,7 @@ signals only when the text really changes.
 ## Settings
 
 Set these on the widget's entry in `~/.config/omarchy/shell.json`, or with
-`omarchy bar set dbrownell.window-position <key> <value>`.
+`omarchy bar set davidbrownell.window-position <key> <value>`.
 
 | Key | Default | Meaning |
 |---|---|---|

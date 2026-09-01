@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "id": "davidbrownell.window-position",
+  "name": "Window position",
+  "version": "1.1.0",
+  "author": "davidbrownell",
+  "description": "Where the focused window sits in the scrolling layout",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "WindowPosition.qml"
+  },
+  "barWidget": {
+    "displayName": "Window position",
+    "description": "Carousel pips showing the focused window's place in the scrolling layout, with a hover readout",
+    "category": "Compositor",
+    "allowMultiple": false,
+    "defaultSection": "left",
+    "schema": [
+      {
+        "key": "style",
+        "type": "select",
+        "label": "Style",
+        "description": "Pips, a numeric counter, or both.",
+        "defaultValue": "pips",
+        "options": [
+          {
+            "value": "pips",
+            "label": "Pips"
+          },
+          {
+            "value": "counter",
+            "label": "Counter"
+          },
+          {
+            "value": "both",
+            "label": "Pips and counter"
+          }
+        ]
+      },
+      {
+        "key": "maxPips",
+        "type": "integer",
+        "label": "Max pips",
+        "description": "Fall back to the counter once the workspace holds more columns than this.",
+        "defaultValue": 12
+      },
+      {
+        "key": "maxDwindleWindows",
+        "type": "integer",
+        "label": "Max dwindle windows",
+        "description": "Under the dwindle layout, fall back to the counter once the workspace holds more windows than this. Dwindle stacks several windows into a column, so the pips run out of room to split well before the column count reaches Max pips.",
+        "defaultValue": 6
+      },
+      {
+        "key": "pollInterval",
+        "type": "integer",
+        "label": "Poll interval (ms)",
+        "description": "How often to re-check the window arrangement. Hyprland emits no event when windows are repositioned, so this is the only way to notice a swap.",
+        "defaultValue": 250
+      }
+    ]
+  }
+}

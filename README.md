@@ -109,6 +109,37 @@ The 24px tolerance on a cut absorbs the fractional positions Hyprland reports
 mid-animation. Floating windows are left out of the strip; while a floating
 window has focus the pips dim and no segment is highlighted.
 
+### Using the reader somewhere else
+
+The reading is a file of its own — [`LayoutReader.js`](LayoutReader.js) — and it
+knows nothing about Hyprland, Quickshell or QML. Hand it rectangles, get the
+shape back. A window is anything carrying an `address`, an `x`, a `y`, a `w` and
+an `h`; the address is only ever compared for equality, so any stable identity
+will do, and the objects you hand in are the ones you get back.
+
+```qml
+import "LayoutReader.js" as LayoutReader
+
+var reading = LayoutReader.read(windows, focusedAddress)
+
+reading.bands         // one array of windows per column (or row)
+reading.order         // every window, in reading order across and down
+reading.grain         // "columns" or "rows"
+reading.activeBand    // which band holds focus, or -1
+reading.activeIndex   // where focus sits in the order, or -1
+reading.deepestStack  // windows in the most crowded band
+```
+
+`LayoutReader.stepDirection(reading, +1)` answers `"l"`, `"r"`, `"u"` or `"d"`
+for walking focus one place along that order, or `""` at either end — worked out
+from where the next window actually lies, so it needs to know nothing about the
+layout doing the stacking. `read()` and `stepDirection()` take an optional
+tolerance; it defaults to `LayoutReader.DEFAULT_TOLERANCE`.
+
+Anything that wants to describe a workspace it cannot name — a window switcher,
+a layout indicator, a workspace preview — needs this same reading, and the
+alternative is `tiledLayout`, which [lies](#reading-the-layout).
+
 **The layout's name is not shown for a Lua layout, because Hyprland gets it
 wrong.** A workspace's `tiledLayout` reports the *first* Lua layout registered
 whatever the workspace is actually tiling with, and goes on reporting it after
@@ -205,3 +236,21 @@ Saving a file here makes the shell rescan the plugin registry, but it does
 **not** re-instantiate an already-mounted bar widget — the running instance
 keeps the old QML. Run `omarchy restart shell` to pick up changes to
 `WindowPosition.qml`. (Changes to `shell.json` settings *do* apply on save.)
+
+### Tests
+
+```bash
+node tests/layout-reader.test.js
+```
+
+No dependencies and nothing to install. The tests load the shipped
+`LayoutReader.js` rather than a copy of it, so they fail when the widget
+changes, and every fixture is a workspace some layout really produces —
+dwindle, rows, a grid, a Lua `25/50/25` with the overflow stacked, a pair
+caught overlapping mid-animation, a fullscreen window over a workspace still
+tiling underneath it.
+
+The reader is worth this because it can be wrong without looking wrong: a
+mis-cut workspace still draws a perfectly plausible row of pips, and the only
+way to notice is to already know what the workspace looks like. The same tests
+run on every push.

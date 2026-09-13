@@ -3,6 +3,7 @@ import Quickshell
 import Quickshell.Hyprland
 import qs.Commons
 import qs.Ui
+import "LayoutReader.js" as LayoutReader
 
 // Carousel indicator for a tiled workspace: one pip per band of windows on
 // the focused workspace, elongated on the band that owns focus. A band that
@@ -11,7 +12,9 @@ import qs.Ui
 //
 // The bands are read out of the window geometry rather than out of the layout's
 // name, so a workspace running a Lua layout somebody drew this morning is
-// mapped as readily as one running scrolling, dwindle or master.
+// mapped as readily as one running scrolling, dwindle or master. That reading
+// lives in LayoutReader.js, which knows nothing about Hyprland or QML; what is
+// left here is fetching the windows, drawing them, and talking to Hyprland.
 BarWidget {
   id: root
   moduleName: "dbrownell.window-position"
@@ -77,84 +80,28 @@ BarWidget {
 
   // ------------------------------------------------------------------ model
 
-  // Two windows are in the same band when they overlap along the axis being
-  // cut. Hyprland reports fractional positions mid-animation, so allow a
-  // little overlap before a cut between them is called off.
-  readonly property int bandTolerance: 24
+  // How much overlap to forgive before a cut between two windows is called
+  // off. Hyprland reports fractional positions mid-animation, so a strict
+  // reading would see bands appear and vanish as windows slide.
+  readonly property int bandTolerance: LayoutReader.DEFAULT_TOLERANCE
 
-  // A tiling layout is a rectangle cut, and the pieces cut again -- scrolling
-  // cuts columns, dwindle alternates, a Lua layout cuts wherever it was drawn
-  // to -- so the arrangement can be recovered from the windows themselves:
-  // find a line across the workspace that no window straddles, split there,
-  // and recurse into each piece.
-  //
-  // Reading geometry rather than the layout's name is what lets the strip map
-  // a layout that did not exist when this was written. The earlier model,
-  // bucketing windows by their left edge, could only ever produce columns: a
-  // rows layout came back as one fat column holding everything, and a grid as
-  // however many of its windows happened to share an x.
-  function cutAlong(windows, axis) {
-    var start = axis === "x" ? "x" : "y"
-    var extent = axis === "x" ? "w" : "h"
-    var other = axis === "x" ? "y" : "x"
-
-    var sorted = windows.slice().sort(function(left, right) {
-      return left[start] !== right[start]
-        ? left[start] - right[start]
-        : left[other] - right[other]
-    })
-
-    var bands = []
-    var band = null
-    var edge = 0
-    for (var i = 0; i < sorted.length; i++) {
-      var window = sorted[i]
-      // Starting past every edge seen so far means no window spans the gap
-      // behind this one, so the layout can be cut there.
-      if (band === null || window[start] >= edge - root.bandTolerance) {
-        band = [window]
-        bands.push(band)
-        edge = window[start] + window[extent]
-      } else {
-        band.push(window)
-        edge = Math.max(edge, window[start] + window[extent])
-      }
+  // What the reader hands back, with the things only this widget knows --
+  // which window has focus, what the workspace is called, what Hyprland
+  // claims it is tiling with -- folded in beside it.
+  function describe(reading, focusedAddress, floatingFocus, tiledLayout, workspaceName) {
+    return {
+      bands: reading.bands,
+      order: reading.order,
+      grain: reading.grain,
+      activeBand: reading.activeBand,
+      activeIndex: reading.activeIndex,
+      windowCount: reading.windowCount,
+      deepestStack: reading.deepestStack,
+      focusedAddress: focusedAddress,
+      floatingFocus: floatingFocus,
+      tiledLayout: tiledLayout,
+      workspaceName: workspaceName
     }
-    return bands
-  }
-
-  // Columns first, so a layout that reads either way -- a grid, an even split
-  // -- comes back as columns, and the strip keeps the left-to-right sense it
-  // has always had under scrolling.
-  function splitOnce(windows) {
-    var bands = cutAlong(windows, "x")
-    if (bands.length > 1) return { axis: "x", bands: bands }
-    bands = cutAlong(windows, "y")
-    if (bands.length > 1) return { axis: "y", bands: bands }
-    return { axis: "", bands: [windows] }
-  }
-
-  // Reading order inside one pip: keep cutting, and emit the windows in the
-  // order the cuts leave them.
-  function flattenBand(windows, out) {
-    if (windows.length === 1) {
-      out.push(windows[0])
-      return
-    }
-
-    var split = splitOnce(windows)
-    if (split.axis === "") {
-      // Nothing separates them: windows sharing a rectangle, or caught
-      // overlapping mid-animation. Fall back to reading order, so the count
-      // and the highlight are right even though the shape is a guess.
-      var piled = windows.slice().sort(function(left, right) {
-        return left.y !== right.y ? left.y - right.y : left.x - right.x
-      })
-      for (var i = 0; i < piled.length; i++) out.push(piled[i])
-      return
-    }
-
-    for (var b = 0; b < split.bands.length; b++) flattenBand(split.bands[b], out)
   }
 
   // Everything is read out of one hyprctl client list, which carries geometry
@@ -199,14 +146,9 @@ BarWidget {
     if (workspace && workspace.name) workspaceName = String(workspace.name)
 
     var focusedAddress = focused && !focused.floating ? String(focused.address || "") : ""
-    var empty = {
-      bands: [], order: [], grain: "columns",
-      activeBand: -1, activeIndex: -1, windowCount: 0, deepestStack: 0,
-      focusedAddress: focusedAddress,
-      floatingFocus: focused ? focused.floating === true : false,
-      tiledLayout: tiledLayout,
-      workspaceName: workspaceName
-    }
+    var floatingFocus = focused ? focused.floating === true : false
+    var empty = describe(LayoutReader.read([], ""), focusedAddress, floatingFocus,
+      tiledLayout, workspaceName)
     if (workspaceId === null) return empty
 
     var tiled = []
@@ -230,43 +172,10 @@ BarWidget {
     }
     if (tiled.length === 0) return empty
 
-    // One pip per top-level band; the windows inside it are the pip's segments,
-    // in the order the cuts below it leave them.
-    var split = splitOnce(tiled)
-    var bands = []
-    var order = []
-    var activeBand = -1
-    var activeIndex = -1
-    var deepestStack = 0
-
-    for (var s = 0; s < split.bands.length; s++) {
-      var band = []
-      flattenBand(split.bands[s], band)
-      bands.push(band)
-      if (band.length > deepestStack) deepestStack = band.length
-
-      for (var m = 0; m < band.length; m++) {
-        if (focusedAddress !== "" && band[m].address === focusedAddress) {
-          activeBand = s
-          activeIndex = order.length
-        }
-        order.push(band[m])
-      }
-    }
-
-    return {
-      bands: bands,
-      order: order,
-      grain: split.axis === "y" ? "rows" : "columns",
-      activeBand: activeBand,
-      activeIndex: activeIndex,
-      windowCount: tiled.length,
-      deepestStack: deepestStack,
-      focusedAddress: focusedAddress,
-      floatingFocus: empty.floatingFocus,
-      tiledLayout: tiledLayout,
-      workspaceName: workspaceName
-    }
+    // One pip per band of the first cut; the windows inside it are the pip's
+    // segments, in the order the cuts below it leave them.
+    return describe(LayoutReader.read(tiled, focusedAddress, root.bandTolerance),
+      focusedAddress, floatingFocus, tiledLayout, workspaceName)
   }
 
   // Hyprland answers tiledLayout for a Lua layout with the name of the *first*
@@ -817,40 +726,14 @@ BarWidget {
 
   // Hyprland has no dispatcher for focusing a particular window: there is no
   // focuswindow, and the window objects hl.get_windows() hands back carry no
-  // focus method either. Focus can only be pushed in a direction.
-  //
-  // So take the direction from the two windows themselves -- whichever way the
-  // next one in reading order actually lies. That walks down a stacked pip as
-  // readily as it crosses the strip, and it needs to know nothing about the
-  // layout doing the stacking, which is the only way it could keep working
-  // under a layout written after this.
+  // focus method either. Focus can only be pushed in a direction -- which the
+  // reader works out from the two windows themselves, so it walks down a
+  // stacked pip as readily as it crosses the strip.
   function focusStep(step) {
     if (!bar) return
 
-    var snapshot = layout
-    var order = snapshot.order
-    var from = snapshot.activeIndex >= 0 ? order[snapshot.activeIndex] : null
-    var to = from ? order[snapshot.activeIndex + step] : null
-    var direction = ""
-
-    if (from && to) {
-      var dx = (to.x + to.w / 2) - (from.x + from.w / 2)
-      var dy = (to.y + to.h / 2) - (from.y + from.h / 2)
-      direction = Math.abs(dx) >= Math.abs(dy)
-        ? (dx > 0 ? "r" : "l")
-        : (dy > 0 ? "d" : "u")
-    } else if (from) {
-      // Focus is already on the first or last window in the order. Nothing to
-      // step to, and the strip does not wrap.
-      return
-    } else {
-      // Nothing tiled has focus -- a floating window holds it, or it is on
-      // another monitor. Push along the grain and let the next refresh report
-      // wherever it landed.
-      direction = snapshot.grain === "rows"
-        ? (step > 0 ? "d" : "u")
-        : (step > 0 ? "r" : "l")
-    }
+    var direction = LayoutReader.stepDirection(layout, step)
+    if (direction === "") return
 
     bar.run("hyprctl dispatch "
       + Util.shellQuote("hl.dsp.focus({ direction = \"" + direction + "\" })"))

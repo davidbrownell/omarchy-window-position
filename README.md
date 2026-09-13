@@ -195,6 +195,10 @@ poll flat as monitors are added. The election is re-run whenever the set of
 instances changes, so unplugging the screen that happened to be holding the
 timer passes it to another rather than stopping the strip.
 
+## License
+
+MIT. See [LICENSE](LICENSE).
+
 ## Editing this widget
 
 Saving a file here makes the shell rescan the plugin registry, but it does

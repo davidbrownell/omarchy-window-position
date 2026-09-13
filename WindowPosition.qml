@@ -43,6 +43,9 @@ BarWidget {
   readonly property string grain: layout.grain
   readonly property string focusedAddress: layout.focusedAddress
   readonly property bool floatingFocus: layout.floatingFocus
+  readonly property var floatingWindows: layout.floating
+  readonly property int floatingCount: layout.floating.length
+  readonly property string floatingAddress: layout.floatingAddress
   readonly property string tiledLayout: layout.tiledLayout
   readonly property string workspaceName: layout.workspaceName
 
@@ -57,10 +60,12 @@ BarWidget {
   // An empty workspace still gets a strip -- one dim placeholder pip -- so the
   // widget holds its place in the bar instead of blinking out and shoving its
   // neighbours around every time the last window closes.
-  readonly property bool showPips: bandCount <= maxPips
+  // Floating marks are drawn in the same strip, so they count against the same
+  // budget: what maxPips is really protecting is the width of the widget.
+  readonly property bool showPips: bandCount + floatingCount <= maxPips
     && !crowded && style !== "counter"
   readonly property bool showCounter: style !== "pips"
-    || bandCount > maxPips || crowded
+    || bandCount + floatingCount > maxPips || crowded
 
   // ---------------------------------------------------------------- monitor
 
@@ -88,7 +93,8 @@ BarWidget {
   // What the reader hands back, with the things only this widget knows --
   // which window has focus, what the workspace is called, what Hyprland
   // claims it is tiling with -- folded in beside it.
-  function describe(reading, focusedAddress, floatingFocus, tiledLayout, workspaceName) {
+  function describe(reading, focusedAddress, floating, floatingAddress,
+      tiledLayout, workspaceName) {
     return {
       bands: reading.bands,
       order: reading.order,
@@ -98,7 +104,9 @@ BarWidget {
       windowCount: reading.windowCount,
       deepestStack: reading.deepestStack,
       focusedAddress: focusedAddress,
-      floatingFocus: floatingFocus,
+      floating: floating,
+      floatingAddress: floatingAddress,
+      floatingFocus: floatingAddress !== "",
       tiledLayout: tiledLayout,
       workspaceName: workspaceName
     }
@@ -145,37 +153,52 @@ BarWidget {
     if (meta && meta.tiledLayout) tiledLayout = String(meta.tiledLayout)
     if (workspace && workspace.name) workspaceName = String(workspace.name)
 
-    var focusedAddress = focused && !focused.floating ? String(focused.address || "") : ""
-    var floatingFocus = focused ? focused.floating === true : false
-    var empty = describe(LayoutReader.read([], ""), focusedAddress, floatingFocus,
-      tiledLayout, workspaceName)
-    if (workspaceId === null) return empty
+    var isFloating = focused ? focused.floating === true : false
+    var focusedAddress = focused && !isFloating ? String(focused.address || "") : ""
+    var floatingAddress = focused && isFloating ? String(focused.address || "") : ""
+    if (workspaceId === null)
+      return describe(LayoutReader.read([], ""), focusedAddress, [], floatingAddress,
+        tiledLayout, workspaceName)
 
     var tiled = []
+    var floating = []
     for (var c = 0; c < clients.length; c++) {
       var client = clients[c]
       if (client.workspace.id !== workspaceId) continue
-      if (client.floating || client.mapped === false || client.hidden) continue
+      if (client.mapped === false || client.hidden) continue
 
       // Size as well as position: the cut looks for a line no window straddles,
       // which is a question about right and bottom edges as much as left and
       // top ones. Scroll direction is read off these rectangles too.
       var at = client.at
       var size = client.size
-      tiled.push({
+      var window = {
         address: String(client.address || ""),
         x: at ? Number(at[0]) : 0,
         y: at ? Number(at[1]) : 0,
         w: size ? Number(size[0]) : 0,
-        h: size ? Number(size[1]) : 0
-      })
+        h: size ? Number(size[1]) : 0,
+        focusOrder: Number(client.focusHistoryID)
+      }
+
+      // A floating window sits over the tiling rather than in it, so it is no
+      // part of the shape being read -- but it is still on the workspace, and
+      // a widget that leaves it out entirely has nothing to say for the moment
+      // one of them takes focus except to dim, which reads as a fault.
+      if (client.floating) floating.push(window)
+      else tiled.push(window)
     }
-    if (tiled.length === 0) return empty
+
+    // Most recently used first, so the marks only reorder when focus moves
+    // between them. Floating windows have no arrangement to be read off their
+    // geometry -- they overlap wherever they were dropped -- and sorting them
+    // by position would have them swap places as one is dragged.
+    floating.sort(function(left, right) { return left.focusOrder - right.focusOrder })
 
     // One pip per band of the first cut; the windows inside it are the pip's
     // segments, in the order the cuts below it leave them.
     return describe(LayoutReader.read(tiled, focusedAddress, root.bandTolerance),
-      focusedAddress, floatingFocus, tiledLayout, workspaceName)
+      focusedAddress, floating, floatingAddress, tiledLayout, workspaceName)
   }
 
   // Hyprland answers tiledLayout for a Lua layout with the name of the *first*
@@ -214,10 +237,21 @@ BarWidget {
     var band = snapshot.activeBand
     var lines = []
 
-    if (count === 0)
+    // Floating first: a floating window has focus whatever the tiling behind
+    // it is doing, and answering "No tiled windows" to a workspace you are
+    // looking at a window on is no answer at all.
+    var floating = snapshot.floating
+    var floatingIndex = -1
+    for (var f = 0; f < floating.length; f++) {
+      if (floating[f].address === snapshot.floatingAddress) floatingIndex = f
+    }
+
+    if (snapshot.floatingFocus)
+      lines.push(floatingIndex >= 0 && floating.length > 1
+        ? "Floating window " + (floatingIndex + 1) + " of " + floating.length
+        : "Floating window")
+    else if (count === 0)
       lines.push("No tiled windows")
-    else if (snapshot.floatingFocus)
-      lines.push("Floating window")
     else if (index < 0)
       lines.push(count + (count === 1 ? " tiled window" : " tiled windows"))
     else
@@ -227,6 +261,13 @@ BarWidget {
     // mapping those windows, it just has nothing lit.
     if (snapshot.floatingFocus && count > 0)
       lines.push("Tiled\t" + count + (count === 1 ? " window" : " windows"))
+
+    // And the other way about. Floating windows are on the workspace whether
+    // or not one of them holds focus, which is what the hollow marks are
+    // saying; this says how many in words.
+    if (!snapshot.floatingFocus && floating.length > 0)
+      lines.push("Floating\t" + floating.length
+        + (floating.length === 1 ? " window" : " windows"))
 
     // Only worth a row when a band holds more than its own window -- otherwise
     // it repeats the headline back with the same two numbers. Named for the way
@@ -383,6 +424,10 @@ BarWidget {
   readonly property int activePipLength: 14
   readonly property int pipGap: Style.space(4)
 
+  // Floating marks stand off the strip by more than the pips stand off each
+  // other, because they are not part of what the strip is measuring.
+  readonly property int floatingGap: Style.space(9)
+
   // A pixel between segments while there is room for one. Past that the gaps
   // are the first thing to go: a stack of five has all five pixels of the pip
   // to itself rather than four thinned below a pixel each, so the strip stays
@@ -391,12 +436,17 @@ BarWidget {
     return count > 1 && (pipThickness - (count - 1)) / count >= 2 ? 1 : 0
   }
 
-  readonly property real stripLength: {
+  readonly property real tiledLength: {
     if (bandCount <= 0) return pipLength
     var total = pipGap * (bandCount - 1)
     for (var i = 0; i < bandCount; i++) total += pipLengthAt(i)
     return total
   }
+
+  readonly property real floatingLength: floatingCount <= 0 ? 0
+    : floatingGap + pipLength * floatingCount + pipGap * (floatingCount - 1)
+
+  readonly property real stripLength: tiledLength + floatingLength
 
   // Always on. Whatever the workspace holds -- many windows, one, none -- the
   // widget keeps its slot, so the bar around it stays put.
@@ -427,9 +477,12 @@ BarWidget {
 
       // An empty workspace has no band to draw, so stand a dim pip in its
       // place -- the strip reads as "nothing here" rather than disappearing.
+      // Sized rather than filled: a workspace can be empty of tiled windows
+      // and still be carrying floating ones, whose marks share this strip.
       Rectangle {
         visible: root.bandCount === 0
-        anchors.fill: parent
+        width: root.vertical ? root.pipThickness : root.pipLength
+        height: root.vertical ? root.pipLength : root.pipThickness
         radius: Math.min(width, height) / 2
         color: root.bar ? root.bar.barForeground : Color.bar.text
         opacity: 0.25
@@ -494,15 +547,56 @@ BarWidget {
           }
         }
       }
+
+      // One hollow mark per floating window, set off from the strip. Hollow
+      // because a floating window is not one of the pieces the workspace was
+      // cut into: it is over the tiling, not in it, and an outline says so
+      // without needing a legend. The one holding focus fills in.
+      Repeater {
+        model: root.showPips ? root.floatingCount : 0
+
+        Rectangle {
+          id: mark
+          required property int index
+
+          readonly property var window: root.floatingWindows[index] || null
+          readonly property bool focused: root.floatingAddress !== "" && window
+            && window.address === root.floatingAddress
+
+          property real offset: root.tiledLength + root.floatingGap
+            + index * (root.pipLength + root.pipGap)
+
+          x: root.vertical ? 0 : offset
+          y: root.vertical ? offset : 0
+          width: root.vertical ? root.pipThickness : root.pipLength
+          height: root.vertical ? root.pipLength : root.pipThickness
+          radius: Math.min(width, height) / 2
+
+          color: focused
+            ? (root.bar ? root.bar.barForeground : Color.bar.text) : "transparent"
+          border.width: 1
+          border.color: root.bar ? root.bar.barForeground : Color.bar.text
+          opacity: focused ? 1 : 0.4
+
+          Behavior on offset { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+          Behavior on opacity { NumberAnimation { duration: 140 } }
+        }
+      }
     }
 
     Text {
       visible: root.showCounter
-      text: root.windowCount === 0
-        ? "0"
-        : (root.activeIndex >= 0
-          ? (root.activeIndex + 1) + "/" + root.windowCount
-          : "-/" + root.windowCount)
+      // The floating count rides along as a suffix rather than joining the
+      // total: they are windows on the workspace, but they are not places in
+      // the order the first number is counting through.
+      text: {
+        var tiled = root.windowCount === 0
+          ? "0"
+          : (root.activeIndex >= 0
+            ? (root.activeIndex + 1) + "/" + root.windowCount
+            : "-/" + root.windowCount)
+        return root.floatingCount > 0 ? tiled + "+" + root.floatingCount : tiled
+      }
       color: root.bar ? root.bar.barForeground : Color.bar.text
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption

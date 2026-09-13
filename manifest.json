@@ -44,7 +44,7 @@
         "key": "maxPips",
         "type": "integer",
         "label": "Max pips",
-        "description": "Fall back to the counter once the workspace splits into more bands than this.",
+        "description": "Fall back to the counter once the workspace needs more marks than this \u2014 one per band, plus one per floating window.",
         "defaultValue": 12
       },
       {

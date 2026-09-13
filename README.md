@@ -68,6 +68,29 @@ The widget is always on the bar. A workspace holding one window shows one
 pip; an empty workspace shows a single dim placeholder pip (or `0` in counter
 style), so the bar layout never shifts as windows come and go.
 
+### Floating windows
+
+A floating window is over the tiling rather than in it, so it is no part of the
+shape the pips are drawn from — but it is still on the workspace, and it can
+still hold focus. Each one gets a hollow mark, set off from the end of the strip
+by a wider gap. Hollow because an outline says "not one of the pieces this
+workspace was cut into" without needing a legend; the mark holding focus fills
+in, and the pips behind it dim, since nothing in the tiling has focus to show.
+
+The marks are ordered most recently used first, so they only move when focus
+moves between them. Floating windows have no arrangement to be read off their
+geometry — they overlap wherever they were dropped — and ordering them by
+position would have them swapping places as one was dragged.
+
+In counter style the same thing is a suffix: `2/5+1` is the second of five
+tiled windows, with one floating window alongside. It is a suffix rather than
+part of the total because a floating window is not a place in the order the
+first number is counting through.
+
+Scrolling the strip still walks the tiling only. Hyprland's directional focus
+is a question about where windows lie, and a floating window lies wherever it
+was put.
+
 ![A single dim pip on an empty workspace](screenshots/empty.png)
 
 - **Hover** for a readout of the position, under the widget's own name and
@@ -105,7 +128,7 @@ Set these on the widget's entry in `~/.config/omarchy/shell.json`, or with
 | Key | Default | Meaning |
 |---|---|---|
 | `style` | `pips` | `pips`, `counter` (a plain `2/5`), or `both` |
-| `maxPips` | `12` | Above this many columns, fall back to the counter |
+| `maxPips` | `12` | Above this many marks, fall back to the counter |
 | `maxStackedWindows` | `5` | Above this many windows in one pip, fall back to the counter |
 | `pollInterval` | `250` | Milliseconds between arrangement checks (see below) |
 
@@ -146,8 +169,8 @@ columns: a rows layout came back as one fat column holding everything, and a
 grid as however many of its windows happened to share an `x`.
 
 The 24px tolerance on a cut absorbs the fractional positions Hyprland reports
-mid-animation. Floating windows are left out of the strip; while a floating
-window has focus the pips dim and no segment is highlighted.
+mid-animation. Floating windows are left out of the cut entirely — see
+[Floating windows](#floating-windows) for what happens to them instead.
 
 ### Using the reader somewhere else
 

@@ -59,6 +59,22 @@ BarWidget {
   readonly property bool showCounter: style !== "pips"
     || bandCount > maxPips || crowded
 
+  // ---------------------------------------------------------------- monitor
+
+  // A bar surface exists per monitor, so this widget is live once per screen.
+  // Reading the globally focused workspace would leave every strip but one
+  // mapping an output its own bar is not sitting on -- so each instance asks
+  // its window which screen it landed on, and maps what that screen shows.
+  readonly property var screenInfo: root.QsWindow.window
+    ? root.QsWindow.window.screen : null
+  readonly property var monitor: screenInfo ? Hyprland.monitorFor(screenInfo) : null
+
+  // Falls back to the focused workspace while there is no window to ask --
+  // during construction, and for a widget the host mounts outside a bar
+  // surface. On a single-monitor machine the two are the same answer.
+  readonly property var scopedWorkspace: monitor ? monitor.activeWorkspace
+    : Hyprland.focusedWorkspace
+
   // ------------------------------------------------------------------ model
 
   // Two windows are in the same band when they overlap along the axis being
@@ -158,14 +174,19 @@ BarWidget {
       clients.push(ipc)
     }
 
-    // The workspace on screen, not the one owning the focused window. The two
-    // part company the moment you switch to an empty workspace: nothing there
-    // can take focus, so the window you left behind keeps focusHistoryID 0 --
-    // and reading focus first would leave the strip mapping the old workspace.
-    var workspaceId = Hyprland.focusedWorkspace ? Hyprland.focusedWorkspace.id
-      : (focused ? focused.workspace.id : null)
+    // The workspace this monitor is showing, not the one owning the focused
+    // window. The two part company the moment you switch to an empty
+    // workspace: nothing there can take focus, so the window you left behind
+    // keeps focusHistoryID 0 -- and reading focus first would leave the strip
+    // mapping the old workspace. They part company on every unfocused monitor
+    // too, which is the whole reason the workspace is scoped to the output.
+    var workspace = root.scopedWorkspace
+    if (!workspace && focused) workspace = focused.workspace
+    var workspaceId = workspace ? workspace.id : null
 
-    // Focus that sits on another workspace is not this workspace's focus.
+    // Focus that sits on another workspace is not this workspace's focus --
+    // including focus that sits on another monitor, which is how an unfocused
+    // screen's strip comes to map its arrangement with nothing lit.
     if (focused && focused.workspace.id !== workspaceId) focused = null
 
     // Layout is a per-workspace property in Hyprland, so it is read off the
@@ -173,14 +194,9 @@ BarWidget {
     // trusted -- see layoutLabel.
     var tiledLayout = ""
     var workspaceName = workspaceId === null ? "" : String(workspaceId)
-    var workspaces = Hyprland.workspaces.values
-    for (var ws = 0; ws < workspaces.length; ws++) {
-      if (workspaces[ws].id !== workspaceId) continue
-      var meta = workspaces[ws].lastIpcObject
-      if (meta && meta.tiledLayout) tiledLayout = String(meta.tiledLayout)
-      if (meta && meta.name) workspaceName = String(meta.name)
-      break
-    }
+    var meta = workspace && workspace.lastIpcObject ? workspace.lastIpcObject : null
+    if (meta && meta.tiledLayout) tiledLayout = String(meta.tiledLayout)
+    if (workspace && workspace.name) workspaceName = String(workspace.name)
 
     var focusedAddress = focused && !focused.floating ? String(focused.address || "") : ""
     var empty = {
@@ -336,24 +352,63 @@ BarWidget {
 
   // ---------------------------------------------------------------- refresh
 
+  // Every instance of this widget reads the same process-wide Hyprland
+  // snapshot, so one of them fetches it and hands the result to the rest. The
+  // alternative on a three-monitor machine is three round trips several times
+  // a second for one set of numbers.
+  function peers() {
+    return bar && typeof bar.moduleWidgets === "function"
+      ? bar.moduleWidgets(moduleName) : [root]
+  }
+
+  // Bumped on every instance when the set of instances changes, so the two
+  // bindings below are re-elected rather than settled once: a monitor arriving
+  // or leaving has to be able to hand the poller on.
+  property int census: 0
+
+  function noteCensus() { census++ }
+
+  readonly property bool pollMaster: {
+    census
+    var items = root.peers()
+    return items.length === 0 || items[0] === root
+  }
+
+  // Polls while *any* strip has an arrangement to watch. A workspace on an
+  // unfocused monitor can be rearranged too, and the instance drawing it is
+  // not the one holding the timer.
+  readonly property bool pollWanted: {
+    census
+    var items = root.peers()
+    if (items.length === 0) return root.windowCount >= 2
+    for (var i = 0; i < items.length; i++) {
+      if (items[i] && items[i].windowCount >= 2) return true
+    }
+    return false
+  }
+
   function pull() {
     Hyprland.refreshToplevels()
     // Workspaces carry tiledLayout. Toggling a workspace's layout emits no
     // event this widget listens for, so it rides the same refresh as geometry.
     Hyprland.refreshWorkspaces()
-    revision++
+    broadcast("bump")
   }
+
+  // What the refreshes above hand back is global, so one pull answers every
+  // strip; each instance only has to be told to re-read it.
+  function bump() { revision++ }
 
   // Hyprland has no event for a window being repositioned inside a workspace:
   // swapping two columns rewrites every position and emits nothing but title
   // noise. Events do cover everything that changes *which* windows sit on the
   // workspace, so the arrangement is the only thing that has to be polled --
-  // and only while there are at least two windows to arrange.
+  // and only while there are at least two windows to arrange, on some screen.
   Timer {
     id: poller
     interval: root.pollInterval
     repeat: true
-    running: root.windowCount >= 2
+    running: root.pollMaster && root.pollWanted
     triggeredOnStart: true
     onTriggered: root.pull()
   }
@@ -373,24 +428,44 @@ BarWidget {
     "submap", "configreloaded"
   ]
 
+  // Routed to whichever instance is polling, so a burst of events costs one
+  // round trip across the whole bar rather than one per monitor. Every
+  // instance sees every event, and they all restart the same timer.
+  function requestRefresh() {
+    var items = root.peers()
+    var master = items.length > 0 ? items[0] : root
+    if (master && typeof master.startRefresh === "function") master.startRefresh()
+    else root.startRefresh()
+  }
+
+  function startRefresh() { refresh.restart() }
+
   Connections {
     target: Hyprland
 
     function onRawEvent(event) {
       if (root.ignoredEvents.indexOf(event.name) !== -1) return
-      refresh.restart()
-    }
-
-    // Switching workspaces swaps out the whole strip. Quickshell tracks the
-    // focused workspace itself, so watch that property directly rather than
-    // hoping the matching raw event names it -- a workspace reached by moving
-    // focus across monitors arrives as focusedmon, not workspace.
-    function onFocusedWorkspaceChanged() {
-      refresh.restart()
+      root.requestRefresh()
     }
   }
 
-  Component.onCompleted: refresh.restart()
+  // The workspace this monitor shows changing swaps out the whole strip. The
+  // raw event behind it reaches every instance anyway, so this is here for the
+  // case that is not an event at all: the screen resolving late, and with it
+  // the monitor this instance is scoped to.
+  onScopedWorkspaceChanged: requestRefresh()
+
+  Component.onCompleted: {
+    // Deferred, because the host publishes this instance to the widget
+    // registry as the loader finishes -- which can be after this runs, so a
+    // census taken here could miss the instance taking it.
+    Qt.callLater(function() { root.broadcast("noteCensus") })
+    requestRefresh()
+  }
+
+  // The poller may have been this one. Whoever is left re-elects on the next
+  // evaluation of pollMaster, which is what the census is for.
+  Component.onDestruction: broadcast("noteCensus")
 
   // --------------------------------------------------------------- geometry
 

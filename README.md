@@ -145,17 +145,14 @@ arrangement is the only thing that has to be polled. The widget therefore:
 
 - refreshes immediately, debounced 60ms, on any relevant event — so opening,
   closing and focusing a window is instant;
-- refreshes on `Hyprland.focusedWorkspace` changing, rather than relying on the
-  raw event to name the workspace: focus moved across monitors arrives as
-  `focusedmon`, and the workspace it lands on is only visible in that property;
-- polls every `pollInterval` **only while the workspace holds two or more
-  tiled windows**, since a single window has no arrangement to change and the
-  count itself never changes without an event.
+- polls every `pollInterval` **only while some workspace on screen holds two
+  or more tiled windows**, since a single window has no arrangement to change
+  and the count itself never changes without an event.
 
 Measured cost of the poll at the 250ms default: below the 10ms scheduler tick
 resolution over a 20s sample, i.e. indistinguishable from the poller being off.
 
-The workspace being mapped is the **focused workspace**, not the workspace
+The workspace being mapped is the one **the monitor is showing**, not the one
 owning the focused window. The two part company as soon as you switch to an
 empty workspace: nothing there can take focus, so the window you left keeps
 `focusHistoryID == 0`, and reading focus first would leave the strip mapping
@@ -177,6 +174,26 @@ so two workspaces can disagree. Neither emits an event this widget listens for,
 so a layout switch is picked up on the next poll rather than instantly — though
 since the strip is drawn from geometry, it has usually already redrawn itself
 by then.
+
+## More than one monitor
+
+A bar surface exists per monitor, so this widget is live once per screen. Each
+instance asks its own window which output it is on (`Hyprland.monitorFor`) and
+maps the workspace that output is showing, rather than the globally focused
+one — otherwise every strip but the one you were looking at would be mapping
+somebody else's screen.
+
+Only the monitor holding focus lights a segment. The others draw their
+arrangement dim, with nothing highlighted: there is one focused window on the
+machine, and claiming otherwise on three screens at once would make the bright
+segment mean nothing.
+
+The Hyprland snapshot the strips are drawn from is process-wide, so the
+instances do not each fetch it. One is elected to hold the timer, and it hands
+the result to the rest with a single broadcast, which keeps the cost of the
+poll flat as monitors are added. The election is re-run whenever the set of
+instances changes, so unplugging the screen that happened to be holding the
+timer passes it to another rather than stopping the strip.
 
 ## Editing this widget
 

@@ -7,6 +7,46 @@ this morning are all mapped the same way.
 
 ![Four pips, the second stretched into a pill](screenshots/pips.png)
 
+## Install
+
+```bash
+omarchy plugin add https://github.com/davidbrownell/omarchy-window-position.git --enable --yes
+```
+
+A plugin is unsandboxed code running inside `omarchy-shell`, so `omarchy plugin
+add` clones the repo and leaves it **disabled**, on the assumption that you will
+want to read it first. `--enable` above says you have; drop both flags to take
+that offer up:
+
+```bash
+omarchy plugin add https://github.com/davidbrownell/omarchy-window-position.git
+# read the code, then
+omarchy plugin enable davidbrownell.window-position
+```
+
+It lands in the left section of the bar, next to the workspace numbers. To put
+it somewhere else:
+
+```bash
+omarchy bar move davidbrownell.window-position --section center --index 0
+```
+
+Updating is a fast-forward pull of that checkout, with the diff shown before
+anything is touched:
+
+```bash
+omarchy plugin update davidbrownell.window-position
+omarchy plugin remove davidbrownell.window-position
+```
+
+Requires Omarchy 4 and its Quickshell bar. Developed against Omarchy 4.0.3 and
+Hyprland 0.56, and read out of `hyprctl clients` rather than out of anything
+version-specific. The Lua layouts of Hyprland 0.55+ are the case this widget
+exists to handle, but it does not need them to be useful — a plain scrolling or
+dwindle workspace reads the same way.
+
+## How it reads
+
 One pip per column, left to right. The column holding focus stretches into a
 pill. A column that stacks several windows splits its pip into one segment per
 window, and the focused window's segment is the bright one — so both the

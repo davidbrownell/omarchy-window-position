@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "davidbrownell.window-position",
   "name": "Window position",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "author": "Dave Brownell",
   "description": "Where the focused window sits in the scrolling layout",
   "kinds": [
@@ -13,7 +13,7 @@
   },
   "barWidget": {
     "displayName": "Window position",
-    "description": "Carousel pips showing the focused window's place in the scrolling layout, with a hover readout",
+    "description": "Carousel pips showing the focused window's place in the workspace's tiling, with a hover readout",
     "category": "Compositor",
     "allowMultiple": false,
     "defaultSection": "left",
@@ -43,15 +43,15 @@
         "key": "maxPips",
         "type": "integer",
         "label": "Max pips",
-        "description": "Fall back to the counter once the workspace holds more columns than this.",
+        "description": "Fall back to the counter once the workspace splits into more bands than this.",
         "defaultValue": 12
       },
       {
-        "key": "maxDwindleWindows",
+        "key": "maxStackedWindows",
         "type": "integer",
-        "label": "Max dwindle windows",
-        "description": "Under the dwindle layout, fall back to the counter once the workspace holds more windows than this. Dwindle stacks several windows into a column, so the pips run out of room to split well before the column count reaches Max pips.",
-        "defaultValue": 6
+        "label": "Max stacked windows",
+        "description": "Fall back to the counter once a single pip has to hold more windows than this. A pip is five pixels tall, so a deeper stack cannot give each window a pixel.",
+        "defaultValue": 5
       },
       {
         "key": "pollInterval",

@@ -4,10 +4,14 @@ import Quickshell.Hyprland
 import qs.Commons
 import qs.Ui
 
-// Carousel indicator for the scrolling layout: one pip per column on the
-// focused workspace, elongated on the column that owns focus. Columns that
-// stack several windows split their pip into one segment per window, so the
+// Carousel indicator for a tiled workspace: one pip per band of windows on
+// the focused workspace, elongated on the band that owns focus. A band that
+// stacks several windows splits its pip into one segment per window, so the
 // widget maps the workspace instead of only counting it.
+//
+// The bands are read out of the window geometry rather than out of the layout's
+// name, so a workspace running a Lua layout somebody drew this morning is
+// mapped as readily as one running scrolling, dwindle or master.
 BarWidget {
   id: root
   moduleName: "dbrownell.window-position"
@@ -20,7 +24,7 @@ BarWidget {
 
   readonly property string style: String(setting("style", "pips"))
   readonly property int maxPips: Math.max(1, Number(setting("maxPips", 12)))
-  readonly property int maxDwindleWindows: Math.max(1, Number(setting("maxDwindleWindows", 6)))
+  readonly property int maxStackedWindows: Math.max(1, Number(setting("maxStackedWindows", 5)))
   readonly property int pollInterval: Math.max(100, Number(setting("pollInterval", 250)))
 
   // Bumped on every refresh so one counter drives the whole recompute, even
@@ -28,37 +32,114 @@ BarWidget {
   property int revision: 0
 
   readonly property var layout: computeLayout(revision)
-  readonly property int columnCount: layout.columns.length
-  readonly property int activeColumn: layout.activeColumn
+  readonly property int bandCount: layout.bands.length
+  readonly property int activeBand: layout.activeBand
   readonly property int activeIndex: layout.activeIndex
   readonly property int windowCount: layout.windowCount
+  readonly property int deepestStack: layout.deepestStack
+  readonly property string grain: layout.grain
   readonly property string focusedAddress: layout.focusedAddress
   readonly property bool floatingFocus: layout.floatingFocus
   readonly property string tiledLayout: layout.tiledLayout
   readonly property string workspaceName: layout.workspaceName
 
-  // Dwindle nests windows rather than lining them up, so a busy workspace
-  // folds into a few columns holding many windows each -- and a pip only has
-  // pipThickness to divide between them, so the segments shrink below a pixel
-  // long before the column count reaches maxPips. Past this many windows the
-  // count is the only part still legible, so show it on its own.
-  readonly property bool crowdedDwindle: tiledLayout === "dwindle"
-    && windowCount > maxDwindleWindows
+  // A pip has only pipThickness to divide between the windows stacked inside
+  // it, so a deep stack draws segments too thin to see. Which layouts stack
+  // deeply is not a question a name can answer -- a workspace can be running
+  // something drawn this morning -- so measure the stack instead. Past this
+  // many windows in one pip the count is the only part still legible, so show
+  // it on its own.
+  readonly property bool crowded: deepestStack > maxStackedWindows
 
   // An empty workspace still gets a strip -- one dim placeholder pip -- so the
   // widget holds its place in the bar instead of blinking out and shoving its
   // neighbours around every time the last window closes.
-  readonly property bool showPips: columnCount <= maxPips
-    && !crowdedDwindle && style !== "counter"
+  readonly property bool showPips: bandCount <= maxPips
+    && !crowded && style !== "counter"
   readonly property bool showCounter: style !== "pips"
-    || columnCount > maxPips || crowdedDwindle
+    || bandCount > maxPips || crowded
 
   // ------------------------------------------------------------------ model
 
-  // Windows share a column when their left edges line up. Hyprland reports
-  // fractional positions mid-animation, so bucket on a tolerance rather than
-  // an exact match.
-  readonly property int columnTolerance: 24
+  // Two windows are in the same band when they overlap along the axis being
+  // cut. Hyprland reports fractional positions mid-animation, so allow a
+  // little overlap before a cut between them is called off.
+  readonly property int bandTolerance: 24
+
+  // A tiling layout is a rectangle cut, and the pieces cut again -- scrolling
+  // cuts columns, dwindle alternates, a Lua layout cuts wherever it was drawn
+  // to -- so the arrangement can be recovered from the windows themselves:
+  // find a line across the workspace that no window straddles, split there,
+  // and recurse into each piece.
+  //
+  // Reading geometry rather than the layout's name is what lets the strip map
+  // a layout that did not exist when this was written. The earlier model,
+  // bucketing windows by their left edge, could only ever produce columns: a
+  // rows layout came back as one fat column holding everything, and a grid as
+  // however many of its windows happened to share an x.
+  function cutAlong(windows, axis) {
+    var start = axis === "x" ? "x" : "y"
+    var extent = axis === "x" ? "w" : "h"
+    var other = axis === "x" ? "y" : "x"
+
+    var sorted = windows.slice().sort(function(left, right) {
+      return left[start] !== right[start]
+        ? left[start] - right[start]
+        : left[other] - right[other]
+    })
+
+    var bands = []
+    var band = null
+    var edge = 0
+    for (var i = 0; i < sorted.length; i++) {
+      var window = sorted[i]
+      // Starting past every edge seen so far means no window spans the gap
+      // behind this one, so the layout can be cut there.
+      if (band === null || window[start] >= edge - root.bandTolerance) {
+        band = [window]
+        bands.push(band)
+        edge = window[start] + window[extent]
+      } else {
+        band.push(window)
+        edge = Math.max(edge, window[start] + window[extent])
+      }
+    }
+    return bands
+  }
+
+  // Columns first, so a layout that reads either way -- a grid, an even split
+  // -- comes back as columns, and the strip keeps the left-to-right sense it
+  // has always had under scrolling.
+  function splitOnce(windows) {
+    var bands = cutAlong(windows, "x")
+    if (bands.length > 1) return { axis: "x", bands: bands }
+    bands = cutAlong(windows, "y")
+    if (bands.length > 1) return { axis: "y", bands: bands }
+    return { axis: "", bands: [windows] }
+  }
+
+  // Reading order inside one pip: keep cutting, and emit the windows in the
+  // order the cuts leave them.
+  function flattenBand(windows, out) {
+    if (windows.length === 1) {
+      out.push(windows[0])
+      return
+    }
+
+    var split = splitOnce(windows)
+    if (split.axis === "") {
+      // Nothing separates them: windows sharing a rectangle, or caught
+      // overlapping mid-animation. Fall back to reading order, so the count
+      // and the highlight are right even though the shape is a guess.
+      var piled = windows.slice().sort(function(left, right) {
+        return left.y !== right.y ? left.y - right.y : left.x - right.x
+      })
+      for (var i = 0; i < piled.length; i++) out.push(piled[i])
+      return
+    }
+
+    for (var b = 0; b < split.bands.length; b++) flattenBand(split.bands[b], out)
+  }
 
   // Everything is read out of one hyprctl client list, which carries geometry
   // and focusHistoryID together. Taking focus from the same snapshot as the
@@ -87,9 +168,9 @@ BarWidget {
     // Focus that sits on another workspace is not this workspace's focus.
     if (focused && focused.workspace.id !== workspaceId) focused = null
 
-    // Layout is a per-workspace property in Hyprland -- omarchy's
-    // workspace-layout toggle writes a workspace rule, so the answer differs
-    // between workspaces and cannot be read once from general:layout.
+    // Layout is a per-workspace property in Hyprland, so it is read off the
+    // workspace rather than once from general:layout. It is reported, not
+    // trusted -- see layoutLabel.
     var tiledLayout = ""
     var workspaceName = workspaceId === null ? "" : String(workspaceId)
     var workspaces = Hyprland.workspaces.values
@@ -103,7 +184,8 @@ BarWidget {
 
     var focusedAddress = focused && !focused.floating ? String(focused.address || "") : ""
     var empty = {
-      columns: [], activeColumn: -1, activeIndex: -1, windowCount: 0,
+      bands: [], order: [], grain: "columns",
+      activeBand: -1, activeIndex: -1, windowCount: 0, deepestStack: 0,
       focusedAddress: focusedAddress,
       floatingFocus: focused ? focused.floating === true : false,
       tiledLayout: tiledLayout,
@@ -117,47 +199,53 @@ BarWidget {
       if (client.workspace.id !== workspaceId) continue
       if (client.floating || client.mapped === false || client.hidden) continue
 
+      // Size as well as position: the cut looks for a line no window straddles,
+      // which is a question about right and bottom edges as much as left and
+      // top ones. Scroll direction is read off these rectangles too.
       var at = client.at
+      var size = client.size
       tiled.push({
         address: String(client.address || ""),
-        title: String(client.title || client["class"] || ""),
         x: at ? Number(at[0]) : 0,
-        y: at ? Number(at[1]) : 0
+        y: at ? Number(at[1]) : 0,
+        w: size ? Number(size[0]) : 0,
+        h: size ? Number(size[1]) : 0
       })
     }
     if (tiled.length === 0) return empty
 
-    tiled.sort(function(left, right) {
-      return left.x !== right.x ? left.x - right.x : left.y - right.y
-    })
-
-    var columns = []
-    for (var t = 0; t < tiled.length; t++) {
-      var window = tiled[t]
-      var last = columns.length > 0 ? columns[columns.length - 1] : null
-      if (last && Math.abs(window.x - last.x) <= root.columnTolerance) last.windows.push(window)
-      else columns.push({ x: window.x, windows: [window] })
-    }
-
-    var activeColumn = -1
+    // One pip per top-level band; the windows inside it are the pip's segments,
+    // in the order the cuts below it leave them.
+    var split = splitOnce(tiled)
+    var bands = []
+    var order = []
+    var activeBand = -1
     var activeIndex = -1
-    var seen = 0
-    for (var col = 0; col < columns.length; col++) {
-      var windows = columns[col].windows
-      for (var w = 0; w < windows.length; w++) {
-        if (focusedAddress !== "" && windows[w].address === focusedAddress) {
-          activeColumn = col
-          activeIndex = seen
+    var deepestStack = 0
+
+    for (var s = 0; s < split.bands.length; s++) {
+      var band = []
+      flattenBand(split.bands[s], band)
+      bands.push(band)
+      if (band.length > deepestStack) deepestStack = band.length
+
+      for (var m = 0; m < band.length; m++) {
+        if (focusedAddress !== "" && band[m].address === focusedAddress) {
+          activeBand = s
+          activeIndex = order.length
         }
-        seen++
+        order.push(band[m])
       }
     }
 
     return {
-      columns: columns,
-      activeColumn: activeColumn,
+      bands: bands,
+      order: order,
+      grain: split.axis === "y" ? "rows" : "columns",
+      activeBand: activeBand,
       activeIndex: activeIndex,
       windowCount: tiled.length,
+      deepestStack: deepestStack,
       focusedAddress: focusedAddress,
       floatingFocus: empty.floatingFocus,
       tiledLayout: tiledLayout,
@@ -165,8 +253,18 @@ BarWidget {
     }
   }
 
+  // Hyprland answers tiledLayout for a Lua layout with the name of the *first*
+  // Lua layout registered, whatever the workspace is actually tiling with: a
+  // workspace running lua:omarchy-wsl-focus reports lua:omarchy-wsl-even, and
+  // goes on reporting it after the layout is changed again. The lua: prefix is
+  // reliable and the name after it is not, so name the layouts Hyprland gets
+  // right and let the band row describe the rest -- it is measured from the
+  // windows, so it cannot be stale.
+  readonly property string layoutLabel: tiledLayout.indexOf("lua:") === 0
+    ? "Lua layout" : tiledLayout
+
   function pipLengthAt(index) {
-    return index === activeColumn ? activePipLength : pipLength
+    return index === activeBand ? activePipLength : pipLength
   }
 
   // Nothing about a row of pips says what it is measuring, so the popup reads
@@ -174,8 +272,8 @@ BarWidget {
   //
   // Read entirely off one layout object rather than the properties unpacked
   // from it: those are separate bindings, and a binding that mixed them could
-  // be evaluated with a new column list beside a stale index -- which indexes
-  // past the end of the list the moment the workspace loses a column.
+  // be evaluated with a new band list beside a stale index -- which indexes
+  // past the end of the list the moment the workspace loses a band.
   //
   // Returned as one string -- a headline, then a tab-separated label and value
   // per line -- rather than as an object, so the popup can build its rows off
@@ -186,9 +284,9 @@ BarWidget {
   function readout() {
     var snapshot = layout
     var count = snapshot.windowCount
-    var columns = snapshot.columns
+    var bands = snapshot.bands
     var index = snapshot.activeIndex
-    var column = snapshot.activeColumn
+    var band = snapshot.activeBand
     var lines = []
 
     if (count === 0)
@@ -205,18 +303,21 @@ BarWidget {
     if (snapshot.floatingFocus && count > 0)
       lines.push("Tiled\t" + count + (count === 1 ? " window" : " windows"))
 
-    // Only worth a row when a column holds more than its own window --
-    // otherwise it repeats the headline back with the same two numbers.
-    if (index >= 0 && columns.length !== count) {
-      var stacked = columns[column] ? columns[column].windows.length : 1
-      lines.push("Column\t" + (column + 1) + " of " + columns.length
+    // Only worth a row when a band holds more than its own window -- otherwise
+    // it repeats the headline back with the same two numbers. Named for the way
+    // the workspace is actually cut, which is the one description of the layout
+    // here that is measured rather than reported.
+    if (index >= 0 && bands.length !== count) {
+      var stacked = bands[band] ? bands[band].length : 1
+      lines.push((snapshot.grain === "rows" ? "Row" : "Column") + "\t"
+        + (band + 1) + " of " + bands.length
         + (stacked > 1 ? " (" + stacked + " stacked)" : ""))
     }
 
     if (snapshot.workspaceName !== "")
       lines.push("Workspace\t" + snapshot.workspaceName)
-    if (snapshot.tiledLayout !== "")
-      lines.push("Layout\t" + snapshot.tiledLayout)
+    if (layoutLabel !== "")
+      lines.push("Layout\t" + layoutLabel)
 
     return lines.join("\n")
   }
@@ -297,12 +398,19 @@ BarWidget {
   readonly property int pipLength: 6
   readonly property int activePipLength: 14
   readonly property int pipGap: Style.space(4)
-  readonly property int segmentGap: 1
+
+  // A pixel between segments while there is room for one. Past that the gaps
+  // are the first thing to go: a stack of five has all five pixels of the pip
+  // to itself rather than four thinned below a pixel each, so the strip stays
+  // readable as far down as the counter fallback lets it go.
+  function segmentGapFor(count) {
+    return count > 1 && (pipThickness - (count - 1)) / count >= 2 ? 1 : 0
+  }
 
   readonly property real stripLength: {
-    if (columnCount <= 0) return pipLength
-    var total = pipGap * (columnCount - 1)
-    for (var i = 0; i < columnCount; i++) total += pipLengthAt(i)
+    if (bandCount <= 0) return pipLength
+    var total = pipGap * (bandCount - 1)
+    for (var i = 0; i < bandCount; i++) total += pipLengthAt(i)
     return total
   }
 
@@ -327,16 +435,16 @@ BarWidget {
     verticalItemAlignment: Grid.AlignVCenter
 
     // The pip strip is positioned by hand rather than with a Row so each pip
-    // can animate its own length as focus moves between columns.
+    // can animate its own length as focus moves between bands.
     Item {
       visible: root.showPips
       width: root.vertical ? root.pipThickness : root.stripLength
       height: root.vertical ? root.stripLength : root.pipThickness
 
-      // An empty workspace has no column to draw, so stand a dim pip in its
+      // An empty workspace has no band to draw, so stand a dim pip in its
       // place -- the strip reads as "nothing here" rather than disappearing.
       Rectangle {
-        visible: root.columnCount === 0
+        visible: root.bandCount === 0
         anchors.fill: parent
         radius: Math.min(width, height) / 2
         color: root.bar ? root.bar.barForeground : Color.bar.text
@@ -344,14 +452,18 @@ BarWidget {
       }
 
       Repeater {
-        model: root.showPips ? root.columnCount : 0
+        model: root.showPips ? root.bandCount : 0
 
         Item {
           id: pip
           required property int index
 
-          readonly property var windows: root.layout.columns[index].windows
-          readonly property bool current: index === root.activeColumn
+          readonly property var windows: root.layout.bands[index] || []
+          readonly property bool current: index === root.activeBand
+
+          readonly property int segmentGap: root.segmentGapFor(windows.length)
+          readonly property real segmentSpan: (root.pipThickness
+            - segmentGap * (windows.length - 1)) / windows.length
 
           property real length: root.pipLengthAt(index)
 
@@ -371,8 +483,8 @@ BarWidget {
           Behavior on length { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
           Behavior on offset { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
 
-          // One segment per window in the column, split across the short axis
-          // so a stacked column reads as a stacked pip.
+          // One segment per window in the band, split across the short axis so
+          // a stacked band reads as a stacked pip.
           Repeater {
             model: pip.windows.length
 
@@ -382,13 +494,12 @@ BarWidget {
               readonly property bool focused: root.focusedAddress !== ""
                 && pip.windows[index].address === root.focusedAddress
 
-              readonly property real span: (root.pipThickness
-                - root.segmentGap * (pip.windows.length - 1)) / pip.windows.length
+              readonly property real segmentOffset: index * (pip.segmentSpan + pip.segmentGap)
 
-              x: root.vertical ? index * (span + root.segmentGap) : 0
-              y: root.vertical ? 0 : index * (span + root.segmentGap)
-              width: root.vertical ? span : pip.width
-              height: root.vertical ? pip.height : span
+              x: root.vertical ? segmentOffset : 0
+              y: root.vertical ? 0 : segmentOffset
+              width: root.vertical ? pip.segmentSpan : pip.width
+              height: root.vertical ? pip.height : pip.segmentSpan
               radius: Math.min(width, height) / 2
 
               color: root.bar ? root.bar.barForeground : Color.bar.text
@@ -429,13 +540,12 @@ BarWidget {
       root.popupOpen = false
     }
 
-    // Scrolling the pips walks focus along the layout, in the direction the
-    // strip runs.
+    // Scrolling the strip walks focus along the layout in reading order --
+    // across the bands, and down into a band that stacks several windows.
     onWheel: function(wheel) {
       var delta = wheel.angleDelta.y !== 0 ? wheel.angleDelta.y : wheel.angleDelta.x
       if (delta === 0) return
-      var direction = root.vertical ? (delta < 0 ? "d" : "u") : (delta < 0 ? "r" : "l")
-      root.focusDirection(direction)
+      root.focusStep(delta < 0 ? 1 : -1)
     }
   }
 
@@ -468,7 +578,7 @@ BarWidget {
     implicitWidth: Math.ceil(bubble.implicitWidth)
     implicitHeight: Math.ceil(bubble.implicitHeight)
 
-    // Focus moving between columns resizes both the strip and the bubble, and
+    // Focus moving between bands resizes both the strip and the bubble, and
     // scrolling here moves focus with the pointer still on the widget, so
     // re-anchor while the bubble is up rather than leave it hanging off the
     // widget's old centre.
@@ -630,8 +740,43 @@ BarWidget {
     }
   }
 
-  function focusDirection(direction) {
+  // Hyprland has no dispatcher for focusing a particular window: there is no
+  // focuswindow, and the window objects hl.get_windows() hands back carry no
+  // focus method either. Focus can only be pushed in a direction.
+  //
+  // So take the direction from the two windows themselves -- whichever way the
+  // next one in reading order actually lies. That walks down a stacked pip as
+  // readily as it crosses the strip, and it needs to know nothing about the
+  // layout doing the stacking, which is the only way it could keep working
+  // under a layout written after this.
+  function focusStep(step) {
     if (!bar) return
+
+    var snapshot = layout
+    var order = snapshot.order
+    var from = snapshot.activeIndex >= 0 ? order[snapshot.activeIndex] : null
+    var to = from ? order[snapshot.activeIndex + step] : null
+    var direction = ""
+
+    if (from && to) {
+      var dx = (to.x + to.w / 2) - (from.x + from.w / 2)
+      var dy = (to.y + to.h / 2) - (from.y + from.h / 2)
+      direction = Math.abs(dx) >= Math.abs(dy)
+        ? (dx > 0 ? "r" : "l")
+        : (dy > 0 ? "d" : "u")
+    } else if (from) {
+      // Focus is already on the first or last window in the order. Nothing to
+      // step to, and the strip does not wrap.
+      return
+    } else {
+      // Nothing tiled has focus -- a floating window holds it, or it is on
+      // another monitor. Push along the grain and let the next refresh report
+      // wherever it landed.
+      direction = snapshot.grain === "rows"
+        ? (step > 0 ? "d" : "u")
+        : (step > 0 ? "r" : "l")
+    }
+
     bar.run("hyprctl dispatch "
       + Util.shellQuote("hl.dsp.focus({ direction = \"" + direction + "\" })"))
   }
